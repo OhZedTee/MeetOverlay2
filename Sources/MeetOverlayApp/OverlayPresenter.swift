@@ -11,6 +11,11 @@ final class OverlayPresenter {
         hide()
         playNotificationSound()
 
+        // The overlay should become key on the screen the cursor is already on,
+        // so keyboard shortcuts and the pointer land where the user is looking.
+        let mouseLocation = NSEvent.mouseLocation
+        var keyWindow: NSWindow?
+
         for screen in NSScreen.screens {
             let window = OverlayWindow(
                 contentRect: screen.frame,
@@ -41,12 +46,23 @@ final class OverlayPresenter {
                 )
             )
 
-            window.makeKeyAndOrderFront(nil)
             window.orderFrontRegardless()
             windows.append(window)
+
+            if NSMouseInRect(mouseLocation, screen.frame, false) {
+                keyWindow = window
+            }
         }
 
+        // Activate first so the app owns the cursor and controls render active,
+        // then promote exactly one window to key (a per-window makeKey in the
+        // loop would leave whichever screen happened to be last as the key one).
         NSApplication.shared.activate(ignoringOtherApps: true)
+        (keyWindow ?? windows.first)?.makeKeyAndOrderFront(nil)
+
+        // The previously-active app may have hidden the pointer (full-screen
+        // video, slideshow); reveal it so the user can aim before clicking.
+        NSCursor.setHiddenUntilMouseMoves(false)
     }
 
     func hide() {
@@ -264,6 +280,11 @@ private struct MeetingOverlayView: View {
             .padding(48)
         }
         .tint(MeetOverlayTheme.Palette.accent)
+        // Force active control rendering: only one overlay window can be key, so
+        // on additional displays — and for the brief moment before the app
+        // activates — the bordered Join/Dismiss buttons would otherwise render in
+        // their dimmed inactive state and read as missing against the dark panel.
+        .environment(\.controlActiveState, .active)
         .onExitCommand(perform: onDismiss)
     }
 
