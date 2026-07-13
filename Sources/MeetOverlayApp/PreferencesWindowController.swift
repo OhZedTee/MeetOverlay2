@@ -8,6 +8,7 @@ final class PreferencesWindowController {
     private let preferencesStore: AppPreferencesStore
     private let loginItemController: LoginItemController
     private let notificationPresenter: NotificationPresenter
+    private let browserLauncher: BrowserLauncher
     private let onPreferencesChanged: () -> Void
 
     private var window: NSWindow?
@@ -18,12 +19,14 @@ final class PreferencesWindowController {
         preferencesStore: AppPreferencesStore,
         loginItemController: LoginItemController,
         notificationPresenter: NotificationPresenter,
+        browserLauncher: BrowserLauncher,
         onPreferencesChanged: @escaping () -> Void
     ) {
         self.calendarEventSource = calendarEventSource
         self.preferencesStore = preferencesStore
         self.loginItemController = loginItemController
         self.notificationPresenter = notificationPresenter
+        self.browserLauncher = browserLauncher
         self.onPreferencesChanged = onPreferencesChanged
     }
 
@@ -33,6 +36,7 @@ final class PreferencesWindowController {
             preferencesStore: preferencesStore,
             loginItemController: loginItemController,
             notificationPresenter: notificationPresenter,
+            browserLauncher: browserLauncher,
             onPreferencesChanged: onPreferencesChanged
         )
         let contentView = SettingsView(viewModel: viewModel)
@@ -79,8 +83,17 @@ private final class PreferencesViewModel: ObservableObject {
     @Published var isMeetingRoomCalloutEnabled: Bool
     @Published var isMeetingRoomInAttendees: Bool
     @Published var meetingRoomPattern: String
+    @Published var preferredBrowserBundleID: String?
     @Published var loginItemStatus: String
     @Published var errorMessage: String?
+
+    let availableBrowsers: [InstalledBrowser]
+    private let defaultBrowserName: String?
+
+    var systemDefaultBrowserLabel: String {
+        guard let defaultBrowserName else { return "System Default" }
+        return "System Default (\(defaultBrowserName))"
+    }
 
     var needsStartupAttention: Bool {
         !["Enabled", "Disabled"].contains(loginItemStatus)
@@ -116,11 +129,15 @@ private final class PreferencesViewModel: ObservableObject {
         preferencesStore: AppPreferencesStore,
         loginItemController: LoginItemController,
         notificationPresenter: NotificationPresenter,
+        browserLauncher: BrowserLauncher,
         onPreferencesChanged: @escaping () -> Void
     ) {
         let preferences = preferencesStore.load()
 
         self.calendars = calendars
+        self.availableBrowsers = browserLauncher.availableBrowsers()
+        self.defaultBrowserName = browserLauncher.defaultBrowserName()
+        self.preferredBrowserBundleID = preferences.preferredBrowserBundleID
         self.selectedCalendarIDs = preferences.selectedCalendarIDs
         self.isOverlayEnabled = preferences.isOverlayEnabled
         self.isSystemNotificationEnabled = preferences.isSystemNotificationEnabled
@@ -220,6 +237,11 @@ private final class PreferencesViewModel: ObservableObject {
         savePreferences()
     }
 
+    func setPreferredBrowser(_ bundleID: String?) {
+        preferredBrowserBundleID = bundleID
+        savePreferences()
+    }
+
     func setLaunchAtLogin(_ isEnabled: Bool) {
         do {
             try loginItemController.setEnabled(isEnabled)
@@ -268,7 +290,8 @@ private final class PreferencesViewModel: ObservableObject {
             snoozeOptions: snoozeOptions,
             isMeetingRoomCalloutEnabled: isMeetingRoomCalloutEnabled,
             isMeetingRoomInAttendees: isMeetingRoomInAttendees,
-            meetingRoomPattern: meetingRoomPattern
+            meetingRoomPattern: meetingRoomPattern,
+            preferredBrowserBundleID: preferredBrowserBundleID
         )
 
         preferencesStore.save(preferences)
@@ -296,7 +319,8 @@ private struct SettingsView: View {
                 isSnoozeEnabledBinding: isSnoozeEnabledBinding,
                 meetingRoomCalloutBinding: meetingRoomCalloutBinding,
                 meetingRoomInAttendeesBinding: meetingRoomInAttendeesBinding,
-                meetingRoomPatternBinding: meetingRoomPatternBinding
+                meetingRoomPatternBinding: meetingRoomPatternBinding,
+                preferredBrowserBinding: preferredBrowserBinding
             )
             .tabItem {
                 Label("General", systemImage: "gearshape")
@@ -382,6 +406,13 @@ private struct SettingsView: View {
             set: { viewModel.setMeetingRoomPattern($0) }
         )
     }
+
+    private var preferredBrowserBinding: Binding<String?> {
+        Binding(
+            get: { viewModel.preferredBrowserBundleID },
+            set: { viewModel.setPreferredBrowser($0) }
+        )
+    }
 }
 
 private struct GeneralSettingsView: View {
@@ -396,6 +427,7 @@ private struct GeneralSettingsView: View {
     let meetingRoomCalloutBinding: Binding<Bool>
     let meetingRoomInAttendeesBinding: Binding<Bool>
     let meetingRoomPatternBinding: Binding<String>
+    let preferredBrowserBinding: Binding<String?>
 
     private var anyReminderStyleEnabled: Bool {
         viewModel.isOverlayEnabled || viewModel.isSystemNotificationEnabled
@@ -474,6 +506,28 @@ private struct GeneralSettingsView: View {
                         SnoozeOptionsEditor(viewModel: viewModel)
                             .padding(.top, 2)
                     }
+                }
+            }
+
+            SettingsCard(
+                systemImage: "safari",
+                title: "Meeting Links",
+                description: "Choose which browser opens meeting links when you join."
+            ) {
+                HStack(spacing: 8) {
+                    Text("Open links in")
+                    Picker("", selection: preferredBrowserBinding) {
+                        Text(viewModel.systemDefaultBrowserLabel).tag(String?.none)
+                        if !viewModel.availableBrowsers.isEmpty {
+                            Divider()
+                            ForEach(viewModel.availableBrowsers) { browser in
+                                Text(browser.name).tag(Optional(browser.bundleID))
+                            }
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
                 }
             }
 
