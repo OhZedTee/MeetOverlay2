@@ -9,6 +9,7 @@ final class MeetingMonitorController {
     private let notificationPresenter: NotificationPresenter
     private let statusMenu: StatusMenuController
     private let preferencesStore: AppPreferencesStore
+    private let browserLauncher: BrowserLauncher
     private let menuPresenter = CalendarMenuPresenter()
 
     private var timer: Timer?
@@ -24,13 +25,15 @@ final class MeetingMonitorController {
         overlayPresenter: OverlayPresenter,
         notificationPresenter: NotificationPresenter,
         statusMenu: StatusMenuController,
-        preferencesStore: AppPreferencesStore
+        preferencesStore: AppPreferencesStore,
+        browserLauncher: BrowserLauncher
     ) {
         self.calendarEventSource = calendarEventSource
         self.overlayPresenter = overlayPresenter
         self.notificationPresenter = notificationPresenter
         self.statusMenu = statusMenu
         self.preferencesStore = preferencesStore
+        self.browserLauncher = browserLauncher
         self.isEnabled = preferencesStore.load().isOverlayEnabled
 
         statusMenu.onOpenCalendarSettings = {
@@ -38,8 +41,12 @@ final class MeetingMonitorController {
             NSWorkspace.shared.open(url)
         }
 
+        statusMenu.onOpenMeetLink = { [weak self] url in
+            self?.openMeetingLink(url)
+        }
+
         notificationPresenter.onJoin = { [weak self] eventID, url in
-            NSWorkspace.shared.open(url)
+            self?.openMeetingLink(url)
             self?.suppressVisibleMeeting(eventID)
         }
 
@@ -175,7 +182,7 @@ final class MeetingMonitorController {
         overlayPresenter.show(
             meeting: meeting,
             onJoin: { [weak self] in
-                NSWorkspace.shared.open(meeting.meetURL)
+                self?.openMeetingLink(meeting.meetURL)
                 self?.suppressVisibleMeeting(meeting.eventID)
             },
             onDismiss: { [weak self] in
@@ -188,6 +195,10 @@ final class MeetingMonitorController {
             attendees: roomPresentation.attendees,
             roomName: roomPresentation.roomName
         )
+    }
+
+    private func openMeetingLink(_ url: URL) {
+        browserLauncher.open(url, preferredBundleID: preferencesStore.load().preferredBrowserBundleID)
     }
 
     private func eventsForMenu(now: Date, preferences: AppPreferences) -> [CalendarEventSnapshot] {

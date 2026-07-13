@@ -5,6 +5,7 @@ import MeetOverlayCore
 final class StatusMenuController: NSObject {
     var onOpenPreferences: (() -> Void)?
     var onOpenCalendarSettings: (() -> Void)?
+    var onOpenMeetLink: ((URL) -> Void)?
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
@@ -149,6 +150,6 @@ final class StatusMenuController: NSObject {
 
     @objc private func openMeetLink(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
-        NSWorkspace.shared.open(url)
+        onOpenMeetLink?(url)
     }
 }

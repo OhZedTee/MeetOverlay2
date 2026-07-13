@@ -20,6 +20,7 @@ final class AppPreferencesStoreTests: XCTestCase {
         XCTAssertFalse(preferences.isMeetingRoomCalloutEnabled)
         XCTAssertTrue(preferences.isMeetingRoomInAttendees)
         XCTAssertEqual(preferences.meetingRoomPattern, "")
+        XCTAssertNil(preferences.preferredBrowserBundleID)
     }
 
     func testPersistsPreferences() throws {
@@ -37,7 +38,8 @@ final class AppPreferencesStoreTests: XCTestCase {
             snoozeOptions: [30, 60],
             isMeetingRoomCalloutEnabled: true,
             isMeetingRoomInAttendees: false,
-            meetingRoomPattern: "MTL-*"
+            meetingRoomPattern: "MTL-*",
+            preferredBrowserBundleID: "com.google.Chrome"
         )
 
         store.save(savedPreferences)
@@ -70,6 +72,7 @@ final class AppPreferencesStoreTests: XCTestCase {
         XCTAssertFalse(preferences.isMeetingRoomCalloutEnabled, "Old saved data missing room callout flag should default to off")
         XCTAssertTrue(preferences.isMeetingRoomInAttendees, "Old saved data missing room-in-attendees flag should default to true")
         XCTAssertEqual(preferences.meetingRoomPattern, "", "Old saved data missing room pattern should default to empty")
+        XCTAssertNil(preferences.preferredBrowserBundleID, "Old saved data missing browser preference should default to the system default browser")
     }
 
     func testMeetingRoomConfigMirrorsPreferenceFields() throws {
@@ -125,6 +128,17 @@ final class AppPreferencesStoreTests: XCTestCase {
         XCTAssertEqual(loaded.alertLeadTimeUnit, .seconds)
         XCTAssertFalse(loaded.isSnoozeEnabled)
         XCTAssertEqual(loaded.snoozeOptions, [30, 90, 180])
+    }
+
+    func testPersistsPreferredBrowser() throws {
+        let defaults = makeDefaults()
+        let store = AppPreferencesStore(defaults: defaults)
+
+        store.save(AppPreferences(preferredBrowserBundleID: "org.mozilla.firefox"))
+        XCTAssertEqual(store.load().preferredBrowserBundleID, "org.mozilla.firefox")
+
+        store.save(AppPreferences(preferredBrowserBundleID: nil))
+        XCTAssertNil(store.load().preferredBrowserBundleID, "Clearing the preference should fall back to the system default browser")
     }
 
     private func makeDefaults() -> UserDefaults {

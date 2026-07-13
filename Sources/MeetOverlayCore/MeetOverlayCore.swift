@@ -77,6 +77,9 @@ public struct AppPreferences: Codable, Equatable {
     public var isMeetingRoomCalloutEnabled: Bool
     public var isMeetingRoomInAttendees: Bool
     public var meetingRoomPattern: String
+    /// Bundle identifier of the browser used to open meeting links.
+    /// `nil` means the system default browser.
+    public var preferredBrowserBundleID: String?
 
     public var meetingRoomConfig: MeetingRoomConfig {
         MeetingRoomConfig(
@@ -98,7 +101,8 @@ public struct AppPreferences: Codable, Equatable {
         snoozeOptions: [TimeInterval] = [60, 120, 300, 600, 900],
         isMeetingRoomCalloutEnabled: Bool = false,
         isMeetingRoomInAttendees: Bool = true,
-        meetingRoomPattern: String = ""
+        meetingRoomPattern: String = "",
+        preferredBrowserBundleID: String? = nil
     ) {
         self.selectedCalendarIDs = selectedCalendarIDs
         self.isOverlayEnabled = isOverlayEnabled
@@ -112,6 +116,7 @@ public struct AppPreferences: Codable, Equatable {
         self.isMeetingRoomCalloutEnabled = isMeetingRoomCalloutEnabled
         self.isMeetingRoomInAttendees = isMeetingRoomInAttendees
         self.meetingRoomPattern = meetingRoomPattern
+        self.preferredBrowserBundleID = preferredBrowserBundleID
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -127,6 +132,7 @@ public struct AppPreferences: Codable, Equatable {
         case isMeetingRoomCalloutEnabled
         case isMeetingRoomInAttendees
         case meetingRoomPattern
+        case preferredBrowserBundleID
     }
 
     public init(from decoder: Decoder) throws {
@@ -143,6 +149,7 @@ public struct AppPreferences: Codable, Equatable {
         isMeetingRoomCalloutEnabled = try container.decodeIfPresent(Bool.self, forKey: .isMeetingRoomCalloutEnabled) ?? false
         isMeetingRoomInAttendees = try container.decodeIfPresent(Bool.self, forKey: .isMeetingRoomInAttendees) ?? true
         meetingRoomPattern = try container.decodeIfPresent(String.self, forKey: .meetingRoomPattern) ?? ""
+        preferredBrowserBundleID = try container.decodeIfPresent(String.self, forKey: .preferredBrowserBundleID)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -159,6 +166,7 @@ public struct AppPreferences: Codable, Equatable {
         try container.encode(isMeetingRoomCalloutEnabled, forKey: .isMeetingRoomCalloutEnabled)
         try container.encode(isMeetingRoomInAttendees, forKey: .isMeetingRoomInAttendees)
         try container.encode(meetingRoomPattern, forKey: .meetingRoomPattern)
+        try container.encodeIfPresent(preferredBrowserBundleID, forKey: .preferredBrowserBundleID)
     }
 }
 
