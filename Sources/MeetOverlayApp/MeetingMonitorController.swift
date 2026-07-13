@@ -82,40 +82,15 @@ final class MeetingMonitorController {
         checkNow()
     }
 
+    /// Previews the fullscreen overlay reminder, regardless of whether it is the
+    /// currently-enabled style — the settings screen offers it as an explicit demo.
     func previewReminder() {
-        let now = Date()
-        let preferences = preferencesStore.load()
-        let sampleEvent = CalendarEventSnapshot(
-            id: "preview",
-            title: "Sample Meeting",
-            startDate: now.addingTimeInterval(60),
-            endDate: now.addingTimeInterval(30 * 60),
-            isAllDay: false,
-            participationStatus: .accepted,
-            url: nil,
-            notes: "https://meet.google.com/abc-defg-hij",
-            location: nil
-        )
+        guard visibleEventID == nil, !isPreviewVisible else { return }
 
-        guard let meeting = JoinableMeeting.from(sampleEvent) else { return }
+        let preferences = preferencesStore.load()
+        guard let meeting = sampleMeeting(now: Date()) else { return }
 
         let snoozeOptions = preferences.isSnoozeEnabled ? preferences.snoozeOptions.sorted() : []
-
-        // Preview the reminder style the user actually has on: the fullscreen
-        // overlay when enabled, otherwise a sample system notification (the gentle
-        // channel). Showing a fullscreen sample while fullscreen is off would
-        // demo something that never fires.
-        if !preferences.isOverlayEnabled, preferences.isSystemNotificationEnabled {
-            notificationPresenter.showReminder(
-                for: meeting,
-                roomName: nil,
-                snoozeOptions: snoozeOptions,
-                now: now
-            )
-            return
-        }
-
-        guard visibleEventID == nil, !isPreviewVisible else { return }
 
         isPreviewVisible = true
         overlayPresenter.show(
@@ -128,6 +103,38 @@ final class MeetingMonitorController {
             onSnooze: { [weak self] _ in self?.endPreview() },
             onDismiss: { [weak self] in self?.endPreview() }
         )
+    }
+
+    /// Posts a sample system notification (the gentle reminder channel) so it can be
+    /// previewed independently of the fullscreen overlay.
+    func previewSystemNotification() {
+        let now = Date()
+        let preferences = preferencesStore.load()
+        guard let meeting = sampleMeeting(now: now) else { return }
+
+        let snoozeOptions = preferences.isSnoozeEnabled ? preferences.snoozeOptions.sorted() : []
+        notificationPresenter.showReminder(
+            for: meeting,
+            roomName: nil,
+            snoozeOptions: snoozeOptions,
+            now: now
+        )
+    }
+
+    private func sampleMeeting(now: Date) -> JoinableMeeting? {
+        let sampleEvent = CalendarEventSnapshot(
+            id: "preview",
+            title: "Sample Meeting",
+            startDate: now.addingTimeInterval(60),
+            endDate: now.addingTimeInterval(30 * 60),
+            isAllDay: false,
+            participationStatus: .accepted,
+            url: nil,
+            notes: "https://meet.google.com/abc-defg-hij",
+            location: nil
+        )
+
+        return JoinableMeeting.from(sampleEvent)
     }
 
     private func endPreview() {

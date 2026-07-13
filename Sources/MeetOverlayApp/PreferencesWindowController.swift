@@ -11,6 +11,7 @@ final class PreferencesWindowController {
     private let browserLauncher: BrowserLauncher
     private let onPreferencesChanged: () -> Void
     private let onPreviewReminder: () -> Void
+    private let onPreviewNotification: () -> Void
 
     private var window: NSWindow?
     private var viewModel: PreferencesViewModel?
@@ -22,7 +23,8 @@ final class PreferencesWindowController {
         notificationPresenter: NotificationPresenter,
         browserLauncher: BrowserLauncher,
         onPreferencesChanged: @escaping () -> Void,
-        onPreviewReminder: @escaping () -> Void
+        onPreviewReminder: @escaping () -> Void,
+        onPreviewNotification: @escaping () -> Void
     ) {
         self.calendarEventSource = calendarEventSource
         self.preferencesStore = preferencesStore
@@ -31,6 +33,7 @@ final class PreferencesWindowController {
         self.browserLauncher = browserLauncher
         self.onPreferencesChanged = onPreferencesChanged
         self.onPreviewReminder = onPreviewReminder
+        self.onPreviewNotification = onPreviewNotification
     }
 
     func show() {
@@ -49,7 +52,8 @@ final class PreferencesWindowController {
             notificationPresenter: notificationPresenter,
             browserLauncher: browserLauncher,
             onPreferencesChanged: onPreferencesChanged,
-            onPreviewReminder: onPreviewReminder
+            onPreviewReminder: onPreviewReminder,
+            onPreviewNotification: onPreviewNotification
         )
         let contentView = SettingsView(viewModel: viewModel)
 
@@ -115,11 +119,11 @@ private final class PreferencesViewModel: ObservableObject {
     @Published var isMeetingRoomInAttendees: Bool
     @Published var meetingRoomPattern: String
     @Published var preferredBrowserBundleID: String?
+    @Published var browserChoices: [InstalledBrowser]
     @Published var loginItemStatus: String
     @Published var errorMessage: String?
 
     let reminderSounds = ReminderSoundCatalog.sounds
-    let availableBrowsers: [InstalledBrowser]
     private let defaultBrowserName: String?
 
     var systemDefaultBrowserLabel: String {
@@ -169,9 +173,11 @@ private final class PreferencesViewModel: ObservableObject {
     private let preferencesStore: AppPreferencesStore
     private let loginItemController: LoginItemController
     private let notificationPresenter: NotificationPresenter
+    private let browserLauncher: BrowserLauncher
     private let reminderSoundPlayer = ReminderSoundPlayer()
     private let onPreferencesChanged: () -> Void
     private let onPreviewReminder: () -> Void
+    private let onPreviewNotification: () -> Void
 
     init(
         calendars: [CalendarSnapshot],
@@ -183,7 +189,8 @@ private final class PreferencesViewModel: ObservableObject {
         notificationPresenter: NotificationPresenter,
         browserLauncher: BrowserLauncher,
         onPreferencesChanged: @escaping () -> Void,
-        onPreviewReminder: @escaping () -> Void
+        onPreviewReminder: @escaping () -> Void,
+        onPreviewNotification: @escaping () -> Void
     ) {
         self.calendars = calendars
         self.calendarAccessStatus = calendarAccessStatus
@@ -203,13 +210,26 @@ private final class PreferencesViewModel: ObservableObject {
         self.preferredBrowserBundleID = initialPreferences.preferredBrowserBundleID
         self.launchAtLogin = loginItemController.isEnabled
         self.loginItemStatus = loginItemController.statusText
-        self.availableBrowsers = browserLauncher.availableBrowsers()
         self.defaultBrowserName = browserLauncher.defaultBrowserName()
+
+        // Seed the picker with auto-detected browsers/PWAs, plus a previously-chosen
+        // custom app that Launch Services doesn't surface, so it still shows by name.
+        var choices = browserLauncher.availableBrowsers()
+        if let savedID = initialPreferences.preferredBrowserBundleID,
+           !choices.contains(where: { $0.bundleID == savedID }),
+           let saved = browserLauncher.browser(forBundleID: savedID) {
+            choices.append(saved)
+            choices.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
+        self.browserChoices = choices
+
         self.preferencesStore = preferencesStore
         self.loginItemController = loginItemController
         self.notificationPresenter = notificationPresenter
+        self.browserLauncher = browserLauncher
         self.onPreferencesChanged = onPreferencesChanged
         self.onPreviewReminder = onPreviewReminder
+        self.onPreviewNotification = onPreviewNotification
 
         if initialPreferences.isSystemNotificationEnabled {
             Task { [weak self] in
@@ -262,6 +282,10 @@ private final class PreferencesViewModel: ObservableObject {
         onPreviewReminder()
     }
 
+    func previewSystemNotification() {
+        onPreviewNotification()
+    }
+
     func setAlertLeadTimeDisplayValue(_ value: Double) {
         alertLeadTime = ReminderTimeLimits.clamped(alertLeadTimeUnit.toSeconds(max(1, value)))
         savePreferences()
@@ -307,6 +331,18 @@ private final class PreferencesViewModel: ObservableObject {
 
     func setPreferredBrowser(_ bundleID: String?) {
         preferredBrowserBundleID = bundleID
+        savePreferences()
+    }
+
+    func chooseCustomBrowser() {
+        guard let chosen = browserLauncher.chooseApplication() else { return }
+
+        if !browserChoices.contains(where: { $0.bundleID == chosen.bundleID }) {
+            browserChoices.append(chosen)
+            browserChoices.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
+
+        preferredBrowserBundleID = chosen.bundleID
         savePreferences()
     }
 
@@ -509,8 +545,14 @@ private struct GeneralSettingsView: View {
                         .padding(.top, 2)
                 }
 
-                Button("Show Sample Reminder") {
-                    viewModel.previewReminder()
+                HStack(spacing: MeetOverlayTheme.Spacing.small) {
+                    Button("Show Sample Reminder") {
+                        viewModel.previewReminder()
+                    }
+
+                    Button("Show Sample System Notification") {
+                        viewModel.previewSystemNotification()
+                    }
                 }
             }
         }
@@ -522,20 +564,30 @@ private struct GeneralSettingsView: View {
             title: "Meeting Links",
             description: "Choose which browser opens meeting links when you join."
         ) {
-            HStack(spacing: 8) {
-                Text("Open links in")
-                Picker("", selection: preferredBrowserBinding) {
-                    Text(viewModel.systemDefaultBrowserLabel).tag(String?.none)
-                    if !viewModel.availableBrowsers.isEmpty {
-                        Divider()
-                        ForEach(viewModel.availableBrowsers) { browser in
-                            Text(browser.name).tag(Optional(browser.bundleID))
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Text("Open links in")
+                    Picker("", selection: preferredBrowserBinding) {
+                        Text(viewModel.systemDefaultBrowserLabel).tag(String?.none)
+                        if !viewModel.browserChoices.isEmpty {
+                            Divider()
+                            ForEach(viewModel.browserChoices) { browser in
+                                Text(browser.name).tag(Optional(browser.bundleID))
+                            }
                         }
                     }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
+
+                    Button("Choose…") {
+                        viewModel.chooseCustomBrowser()
+                    }
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .fixedSize()
+
+                Text("Pick any installed app — including a PWA such as Google Meet installed through Chrome.")
+                    .font(MeetOverlayTheme.Typography.helper)
+                    .foregroundStyle(.secondary)
             }
         }
     }

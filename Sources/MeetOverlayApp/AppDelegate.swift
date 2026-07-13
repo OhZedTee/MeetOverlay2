@@ -34,6 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onPreviewReminder: { [weak monitorController] in
                 monitorController?.previewReminder()
+            },
+            onPreviewNotification: { [weak monitorController] in
+                monitorController?.previewSystemNotification()
             }
         )
 
