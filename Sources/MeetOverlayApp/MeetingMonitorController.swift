@@ -83,8 +83,6 @@ final class MeetingMonitorController {
     }
 
     func previewReminder() {
-        guard visibleEventID == nil, !isPreviewVisible else { return }
-
         let now = Date()
         let preferences = preferencesStore.load()
         let sampleEvent = CalendarEventSnapshot(
@@ -102,6 +100,22 @@ final class MeetingMonitorController {
         guard let meeting = JoinableMeeting.from(sampleEvent) else { return }
 
         let snoozeOptions = preferences.isSnoozeEnabled ? preferences.snoozeOptions.sorted() : []
+
+        // Preview the reminder style the user actually has on: the fullscreen
+        // overlay when enabled, otherwise a sample system notification (the gentle
+        // channel). Showing a fullscreen sample while fullscreen is off would
+        // demo something that never fires.
+        if !preferences.isOverlayEnabled, preferences.isSystemNotificationEnabled {
+            notificationPresenter.showReminder(
+                for: meeting,
+                roomName: nil,
+                snoozeOptions: snoozeOptions,
+                now: now
+            )
+            return
+        }
+
+        guard visibleEventID == nil, !isPreviewVisible else { return }
 
         isPreviewVisible = true
         overlayPresenter.show(

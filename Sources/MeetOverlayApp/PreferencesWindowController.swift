@@ -502,9 +502,9 @@ private struct GeneralSettingsView: View {
                 Divider()
 
                 Toggle("Enable snooze", isOn: isSnoozeEnabledBinding)
-                    .disabled(!viewModel.isOverlayEnabled)
+                    .disabled(!viewModel.anyReminderStyleEnabled)
 
-                if viewModel.isSnoozeEnabled && viewModel.isOverlayEnabled {
+                if viewModel.isSnoozeEnabled && viewModel.anyReminderStyleEnabled {
                     SnoozeOptionsEditor(viewModel: viewModel)
                         .padding(.top, 2)
                 }
