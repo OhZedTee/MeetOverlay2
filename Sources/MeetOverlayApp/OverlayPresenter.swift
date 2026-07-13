@@ -321,6 +321,70 @@ extension View {
     }
 }
 
+/// A simple wrapping row: lays subviews left-to-right and flows onto new,
+/// horizontally-centered lines when the proposed width runs out.
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        let rows = rows(maxWidth: maxWidth, subviews: subviews)
+        let width = rows.map(\.width).max() ?? 0
+        let height = rows.map(\.height).reduce(0, +) + lineSpacing * CGFloat(max(0, rows.count - 1))
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
+        let rows = rows(maxWidth: bounds.width, subviews: subviews)
+        var y = bounds.minY
+
+        for row in rows {
+            var x = bounds.minX + (bounds.width - row.width) / 2
+            for index in row.indices {
+                let size = subviews[index].sizeThatFits(.unspecified)
+                subviews[index].place(
+                    at: CGPoint(x: x, y: y + (row.height - size.height) / 2),
+                    proposal: ProposedViewSize(size)
+                )
+                x += size.width + spacing
+            }
+            y += row.height + lineSpacing
+        }
+    }
+
+    private struct Row {
+        var indices: [Int] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    private func rows(maxWidth: CGFloat, subviews: Subviews) -> [Row] {
+        var rows: [Row] = []
+        var current = Row()
+
+        for index in subviews.indices {
+            let size = subviews[index].sizeThatFits(.unspecified)
+            let projectedWidth = current.indices.isEmpty ? size.width : current.width + spacing + size.width
+
+            if !current.indices.isEmpty, projectedWidth > maxWidth {
+                rows.append(current)
+                current = Row(indices: [index], width: size.width, height: size.height)
+            } else {
+                current.width = projectedWidth
+                current.height = max(current.height, size.height)
+                current.indices.append(index)
+            }
+        }
+
+        if !current.indices.isEmpty {
+            rows.append(current)
+        }
+
+        return rows
+    }
+}
+
 private func meetingTimeRangeText(from startDate: Date, to endDate: Date) -> String {
     "\(startDate.formatted(date: .omitted, time: .shortened)) to \(endDate.formatted(date: .omitted, time: .shortened))"
 }
@@ -391,24 +455,31 @@ private struct MeetingOverlayView: View {
                     }
                 }
 
-                HStack(spacing: 10) {
+                VStack(spacing: 14) {
                     Button(action: onJoin) {
                         HStack(spacing: 10) {
                             Text(joinTitle)
                             KeycapHint(symbol: "⏎", tone: .onAccent)
                         }
                     }
-                    .buttonStyle(OverlayPrimaryButtonStyle())
+                    .buttonStyle(OverlayPrimaryButtonStyle(minWidth: 220))
                     .keyboardShortcut(.defaultAction)
 
-                    ForEach(Array(snoozeOptions.prefix(9).enumerated()), id: \.offset) { index, duration in
-                        secondaryButton(
-                            "Snooze \(SnoozeDurationFormatter.label(duration))",
-                            keycap: "\(index + 1)",
-                            key: KeyEquivalent(Character("\(index + 1)"))
-                        ) {
-                            onSnooze(duration)
+                    if !snoozeOptions.isEmpty {
+                        // Snooze chips wrap onto as many lines as needed so a long
+                        // list never overflows the panel or overlaps its neighbours.
+                        FlowLayout(spacing: 10, lineSpacing: 10) {
+                            ForEach(Array(snoozeOptions.prefix(9).enumerated()), id: \.offset) { index, duration in
+                                secondaryButton(
+                                    "Snooze \(compactDuration(duration))",
+                                    keycap: "\(index + 1)",
+                                    key: KeyEquivalent(Character("\(index + 1)"))
+                                ) {
+                                    onSnooze(duration)
+                                }
+                            }
                         }
+                        .frame(maxWidth: 720)
                     }
 
                     Button(action: onDismiss) {
@@ -443,6 +514,15 @@ private struct MeetingOverlayView: View {
         }
 
         return "Join \(meeting.platform.displayName)"
+    }
+
+    // Short label for a snooze chip, e.g. "5m" or "30s", to keep the button row tight.
+    private func compactDuration(_ duration: TimeInterval) -> String {
+        let seconds = Int(duration.rounded())
+        if seconds >= 60, seconds % 60 == 0 {
+            return "\(seconds / 60)m"
+        }
+        return "\(seconds)s"
     }
 
     private func secondaryButton(_ title: String, keycap: String, key: KeyEquivalent, action: @escaping () -> Void) -> some View {
