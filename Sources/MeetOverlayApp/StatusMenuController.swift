@@ -5,6 +5,7 @@ import MeetOverlayCore
 final class StatusMenuController: NSObject {
     var onOpenPreferences: (() -> Void)?
     var onOpenCalendarSettings: (() -> Void)?
+    var onOpenMeetLink: ((URL) -> Void)?
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
@@ -84,11 +85,12 @@ final class StatusMenuController: NSObject {
             item.attributedTitle = attributedTitle(for: row, timeColumnWidth: timeColumnWidth)
             item.image = NSImage(
                 systemSymbolName: row.hasMeetLink ? "video.fill" : "calendar",
-                accessibilityDescription: row.hasMeetLink ? "Google Meet link" : "Calendar event"
+                accessibilityDescription: row.platform.map { "\($0.displayName) link" } ?? "Calendar event"
             )
 
-            if row.meetLinks.count > 1 {
-                item.submenu = meetLinksMenu(for: row.meetLinks)
+            if let submenu = detailSubmenu(for: row) {
+                // A submenu suppresses the item's own click action, so Join moves inside it.
+                item.submenu = submenu
             } else if let meetURL = row.meetURL {
                 item.action = #selector(openMeetLink)
                 item.target = self
@@ -101,14 +103,55 @@ final class StatusMenuController: NSObject {
         }
     }
 
-    private func meetLinksMenu(for links: [URL]) -> NSMenu {
+    // A single submenu carries both the multi-room Meet rescue (open/copy each
+    // room) and the meeting detail (join, booked room, attendee roster).
+    private func detailSubmenu(for row: CalendarMenuRow) -> NSMenu? {
+        let hasMultipleRooms = row.meetLinks.count > 1
+        guard hasMultipleRooms || !row.attendees.isEmpty || row.roomName != nil else {
+            return nil
+        }
+
         let submenu = NSMenu()
 
-        for (index, link) in links.enumerated() {
-            let linkNumber = index + 1
-            let label = "\(linkNumber): \(GoogleMeetLinkFormatter.roomCode(for: link))"
-            submenu.addItem(meetLinkItem(title: "Open \(label)", action: #selector(openMeetLink), link: link))
-            submenu.addItem(meetLinkItem(title: "Copy \(label)", action: #selector(copyMeetLink), link: link))
+        if hasMultipleRooms {
+            for (index, link) in row.meetLinks.enumerated() {
+                let label = "\(index + 1): \(GoogleMeetLinkFormatter.roomCode(for: link))"
+                submenu.addItem(meetLinkItem(title: "Open \(label)", action: #selector(openMeetLink), link: link))
+                submenu.addItem(meetLinkItem(title: "Copy \(label)", action: #selector(copyMeetLink), link: link))
+            }
+            submenu.addItem(.separator())
+        } else if let meetURL = row.meetURL {
+            let joinTitle = row.platform.map { "Join \($0.displayName)" } ?? "Join Meeting"
+            let joinItem = NSMenuItem(title: joinTitle, action: #selector(openMeetLink), keyEquivalent: "")
+            joinItem.target = self
+            joinItem.representedObject = meetURL
+            joinItem.image = NSImage(systemSymbolName: "video.fill", accessibilityDescription: joinTitle)
+            submenu.addItem(joinItem)
+            submenu.addItem(.separator())
+        }
+
+        if let roomName = row.roomName {
+            let roomItem = NSMenuItem(title: roomName, action: nil, keyEquivalent: "")
+            roomItem.image = NSImage(systemSymbolName: "door.left.hand.open", accessibilityDescription: "Meeting room")
+            submenu.addItem(roomItem)
+            submenu.addItem(.separator())
+        }
+
+        if !row.attendees.isEmpty {
+            let headerItem = NSMenuItem(
+                title: "\(row.attendees.count) \(row.attendees.count == 1 ? "Attendee" : "Attendees")",
+                action: nil,
+                keyEquivalent: ""
+            )
+            headerItem.isEnabled = false
+            submenu.addItem(headerItem)
+
+            for attendee in row.attendees {
+                let attendeeItem = NSMenuItem(title: attendee, action: nil, keyEquivalent: "")
+                attendeeItem.image = NSImage(systemSymbolName: "person", accessibilityDescription: nil)
+                attendeeItem.indentationLevel = 1
+                submenu.addItem(attendeeItem)
+            }
         }
 
         return submenu
@@ -203,7 +246,7 @@ final class StatusMenuController: NSObject {
 
     @objc private func openMeetLink(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
-        NSWorkspace.shared.open(url)
+        onOpenMeetLink?(url)
     }
 
     @objc private func copyMeetLink(_ sender: NSMenuItem) {

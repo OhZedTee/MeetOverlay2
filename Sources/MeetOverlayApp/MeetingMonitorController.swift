@@ -6,11 +6,11 @@ import MeetOverlayCore
 final class MeetingMonitorController {
     private let calendarEventSource: CalendarEventSource
     private let overlayPresenter: OverlayPresenter
+    private let notificationPresenter: NotificationPresenter
     private let statusMenu: StatusMenuController
     private let preferencesStore: AppPreferencesStore
-    private let alertLadder = MeetingAlertLadder()
+    private let browserLauncher: BrowserLauncher
     private let airlock = BackToBackAirlock()
-    private let gentleAlertPresenter = GentleAlertPresenter()
     private let menuPresenter = CalendarMenuPresenter()
 
     private var timer: Timer?
@@ -23,13 +23,17 @@ final class MeetingMonitorController {
     init(
         calendarEventSource: CalendarEventSource,
         overlayPresenter: OverlayPresenter,
+        notificationPresenter: NotificationPresenter,
         statusMenu: StatusMenuController,
-        preferencesStore: AppPreferencesStore
+        preferencesStore: AppPreferencesStore,
+        browserLauncher: BrowserLauncher
     ) {
         self.calendarEventSource = calendarEventSource
         self.overlayPresenter = overlayPresenter
+        self.notificationPresenter = notificationPresenter
         self.statusMenu = statusMenu
         self.preferencesStore = preferencesStore
+        self.browserLauncher = browserLauncher
         self.isEnabled = preferencesStore.load().isOverlayEnabled
 
         statusMenu.onOpenCalendarSettings = {
@@ -37,8 +41,21 @@ final class MeetingMonitorController {
             NSWorkspace.shared.open(url)
         }
 
+        statusMenu.onOpenMeetLink = { [weak self] url in
+            self?.openMeetingLink(url)
+        }
+
         calendarEventSource.onEventStoreChanged = { [weak self] in
             self?.checkNow()
+        }
+
+        notificationPresenter.onJoin = { [weak self] eventID, url in
+            self?.openMeetingLink(url)
+            self?.joinVisibleMeeting(eventID)
+        }
+
+        notificationPresenter.onSnooze = { [weak self] eventID, duration in
+            self?.snoozeVisibleMeeting(eventID, duration: duration)
         }
     }
 
@@ -69,6 +86,7 @@ final class MeetingMonitorController {
         guard visibleEventID == nil, !isPreviewVisible else { return }
 
         let now = Date()
+        let preferences = preferencesStore.load()
         let sampleEvent = CalendarEventSnapshot(
             id: "preview",
             title: "Sample Meeting",
@@ -83,10 +101,15 @@ final class MeetingMonitorController {
 
         guard let meeting = JoinableMeeting.from(sampleEvent) else { return }
 
+        let snoozeOptions = preferences.isSnoozeEnabled ? preferences.snoozeOptions.sorted() : []
+
         isPreviewVisible = true
         overlayPresenter.show(
             meeting: meeting,
-            reminderSound: ReminderSoundCatalog.sound(for: preferencesStore.load().reminderSoundID),
+            reminderSound: ReminderSoundCatalog.sound(for: preferences.reminderSoundID),
+            snoozeOptions: snoozeOptions,
+            attendees: meeting.attendees,
+            roomName: nil,
             onJoin: { [weak self] in self?.endPreview() },
             onSnooze: { [weak self] _ in self?.endPreview() },
             onDismiss: { [weak self] in self?.endPreview() }
@@ -125,20 +148,22 @@ final class MeetingMonitorController {
         let now = Date()
         let preferences = preferencesStore.load()
         isEnabled = preferences.isOverlayEnabled
+        let notificationsEnabled = preferences.isSystemNotificationEnabled
         let events = eventsForMenu(now: now, preferences: preferences)
         let sections = menuPresenter.sections(
             now: now,
             events: events,
-            hideFinishedEvents: preferences.hidesFinishedEvents
+            hideFinishedEvents: preferences.hidesFinishedEvents,
+            roomConfig: preferences.meetingRoomConfig
         )
         let menuBarPresentation = menuPresenter.menuBarPresentation(now: now, events: events)
         let emptyMessage = emptyMessage(for: preferences)
 
-        guard isEnabled else {
+        guard isEnabled || notificationsEnabled else {
             visibleEventID = nil
             overlayPresenter.hide()
             statusMenu.update(
-                status: "Fullscreen alerts off",
+                status: "Reminders off",
                 isEnabled: isEnabled,
                 menuBarTitle: menuBarPresentation.title,
                 menuBarUrgency: menuBarPresentation.urgency,
@@ -149,14 +174,15 @@ final class MeetingMonitorController {
         }
 
         let hiddenEventIDs = reminderState.hiddenEventIDs(now: now)
-        let transition = airlock.transition(
+
+        // Back-to-back airlock is a fullscreen affordance, so it only runs when
+        // the fullscreen overlay is enabled.
+        if isEnabled, let transition = airlock.transition(
             now: now,
             events: events,
             hiddenEventIDs: hiddenEventIDs,
             dismissedTransitionEventIDs: reminderState.dismissedAirlockEventIDs
-        )
-
-        if let transition {
+        ) {
             let meeting = transition.nextMeeting
             statusMenu.update(
                 status: "Back-to-back: \(meeting.title)",
@@ -175,7 +201,7 @@ final class MeetingMonitorController {
             overlayPresenter.showAirlock(
                 transition: transition,
                 onJoin: { [weak self] in
-                    NSWorkspace.shared.open(meeting.meetURL)
+                    self?.openMeetingLink(meeting.meetURL)
                     self?.joinVisibleMeeting(meeting.eventID)
                 },
                 onDismiss: { [weak self] in
@@ -185,7 +211,14 @@ final class MeetingMonitorController {
             return
         }
 
-        let alert = alertLadder.alert(
+        // The user-configured lead time drives the gentle stage; the fullscreen
+        // stage still fires in the final minute (never later than the gentle one).
+        let gentleLeadTime = ReminderTimeLimits.clamped(preferences.alertLeadTime)
+        let ladder = MeetingAlertLadder(
+            gentleLeadTime: gentleLeadTime,
+            fullscreenLeadTime: min(60, gentleLeadTime)
+        )
+        let alert = ladder.alert(
             now: now,
             events: events,
             hiddenEventIDs: hiddenEventIDs,
@@ -207,15 +240,28 @@ final class MeetingMonitorController {
         }
 
         let meeting = alert.meeting
+        let roomPresentation = MeetingRoomResolver.resolve(
+            attendees: meeting.attendees,
+            location: meeting.location,
+            config: preferences.meetingRoomConfig
+        )
+        let snoozeOptions = preferences.isSnoozeEnabled ? preferences.snoozeOptions.sorted() : []
+
+        // The actionable system notification is the "gentle" channel: deliver it
+        // once, as soon as the meeting enters the alert window, if enabled.
+        if notificationsEnabled, reminderState.shouldDeliver(eventID: meeting.eventID, stage: .gentle) {
+            reminderState.recordDelivery(eventID: meeting.eventID, stage: .gentle)
+            notificationPresenter.showReminder(
+                for: meeting,
+                roomName: roomPresentation.roomName,
+                snoozeOptions: snoozeOptions,
+                now: now
+            )
+        }
 
         guard alert.stage == .fullscreen else {
             visibleEventID = nil
             overlayPresenter.hide()
-            if reminderState.shouldDeliver(eventID: meeting.eventID, stage: alert.stage) {
-                gentleAlertPresenter.show(meeting: meeting)
-                reminderState.recordDelivery(eventID: meeting.eventID, stage: alert.stage)
-            }
-
             statusMenu.update(
                 status: "Meeting soon: \(meeting.title)",
                 isEnabled: isEnabled,
@@ -236,21 +282,30 @@ final class MeetingMonitorController {
             emptyMessage: emptyMessage
         )
 
+        guard isEnabled else {
+            visibleEventID = nil
+            overlayPresenter.hide()
+            return
+        }
+
         guard visibleEventID != meeting.eventID else {
             return
         }
 
-        guard reminderState.shouldDeliver(eventID: meeting.eventID, stage: alert.stage) else {
+        guard reminderState.shouldDeliver(eventID: meeting.eventID, stage: .fullscreen) else {
             return
         }
 
         visibleEventID = meeting.eventID
-        reminderState.recordDelivery(eventID: meeting.eventID, stage: alert.stage)
+        reminderState.recordDelivery(eventID: meeting.eventID, stage: .fullscreen)
         overlayPresenter.show(
             meeting: meeting,
             reminderSound: ReminderSoundCatalog.sound(for: preferences.reminderSoundID),
+            snoozeOptions: snoozeOptions,
+            attendees: roomPresentation.attendees,
+            roomName: roomPresentation.roomName,
             onJoin: { [weak self] in
-                NSWorkspace.shared.open(meeting.meetURL)
+                self?.openMeetingLink(meeting.meetURL)
                 self?.joinVisibleMeeting(meeting.eventID)
             },
             onSnooze: { [weak self] duration in
@@ -260,6 +315,10 @@ final class MeetingMonitorController {
                 self?.dismissVisibleMeeting(meeting.eventID)
             }
         )
+    }
+
+    private func openMeetingLink(_ url: URL) {
+        browserLauncher.open(url, preferredBundleID: preferencesStore.load().preferredBrowserBundleID)
     }
 
     private func eventsForMenu(now: Date, preferences: AppPreferences) -> [CalendarEventSnapshot] {
@@ -281,18 +340,21 @@ final class MeetingMonitorController {
 
     private func joinVisibleMeeting(_ eventID: String) {
         reminderState.join(eventID: eventID)
+        notificationPresenter.removeReminder(eventID: eventID)
         hideVisibleMeeting()
         checkNow()
     }
 
     private func dismissVisibleMeeting(_ eventID: String) {
         reminderState.dismiss(eventID: eventID)
+        notificationPresenter.removeReminder(eventID: eventID)
         hideVisibleMeeting()
         checkNow()
     }
 
     private func snoozeVisibleMeeting(_ eventID: String, duration: TimeInterval) {
         reminderState.snooze(eventID: eventID, until: Date().addingTimeInterval(duration))
+        notificationPresenter.removeReminder(eventID: eventID)
         hideVisibleMeeting()
         checkNow()
     }

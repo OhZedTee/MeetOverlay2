@@ -10,6 +10,9 @@ final class OverlayPresenter {
     func show(
         meeting: JoinableMeeting,
         reminderSound: ReminderSound,
+        snoozeOptions: [TimeInterval],
+        attendees: [String],
+        roomName: String?,
         onJoin: @escaping () -> Void,
         onSnooze: @escaping (TimeInterval) -> Void,
         onDismiss: @escaping () -> Void
@@ -20,11 +23,16 @@ final class OverlayPresenter {
         present(
             MeetingOverlayView(
                 meeting: meeting,
+                snoozeOptions: snoozeOptions,
+                attendees: attendees,
+                roomName: roomName,
                 onJoin: onJoin,
                 onSnooze: onSnooze,
                 onDismiss: onDismiss
             ),
-            onDismiss: onDismiss
+            onDismiss: onDismiss,
+            // S snoozes by the shortest configured option; nil leaves the key inert.
+            onSnoozeKey: snoozeOptions.first.map { duration in { onSnooze(duration) } }
         )
     }
 
@@ -49,8 +57,17 @@ final class OverlayPresenter {
         windows.removeAll()
     }
 
-    private func present<Content: View>(_ contentView: Content, onDismiss: @escaping () -> Void) {
+    private func present<Content: View>(
+        _ contentView: Content,
+        onDismiss: @escaping () -> Void,
+        onSnoozeKey: (() -> Void)? = nil
+    ) {
         let activeScreen = NSScreen.main ?? NSScreen.screens.first
+
+        // The overlay should become key on the screen the cursor is already on,
+        // so keyboard shortcuts and the pointer land where the user is looking.
+        let mouseLocation = NSEvent.mouseLocation
+        var keyWindow: NSWindow?
 
         for screen in NSScreen.screens {
             let window = OverlayWindow(
@@ -61,6 +78,7 @@ final class OverlayPresenter {
             )
 
             window.onDismiss = onDismiss
+            window.onSnoozeKey = onSnoozeKey
             window.level = .screenSaver
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
             window.backgroundColor = .clear
@@ -69,16 +87,27 @@ final class OverlayPresenter {
 
             if screen == activeScreen {
                 window.contentView = NSHostingView(rootView: contentView)
-                window.makeKeyAndOrderFront(nil)
             } else {
                 window.contentView = NSHostingView(rootView: SecondaryScreenScrimView())
             }
 
             window.orderFrontRegardless()
             windows.append(window)
+
+            if NSMouseInRect(mouseLocation, screen.frame, false) {
+                keyWindow = window
+            }
         }
 
+        // Activate first so the app owns the cursor and controls render active,
+        // then promote exactly one window to key (a per-window makeKey in the
+        // loop would leave whichever screen happened to be last as the key one).
         NSApplication.shared.activate(ignoringOtherApps: true)
+        (keyWindow ?? windows.first)?.makeKeyAndOrderFront(nil)
+
+        // The previously-active app may have hidden the pointer (full-screen
+        // video, slideshow); reveal it so the user can aim before clicking.
+        NSCursor.setHiddenUntilMouseMoves(false)
     }
 
 }
@@ -92,6 +121,7 @@ private struct SecondaryScreenScrimView: View {
 @MainActor
 private final class OverlayWindow: NSWindow {
     var onDismiss: (() -> Void)?
+    var onSnoozeKey: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -103,6 +133,13 @@ private final class OverlayWindow: NSWindow {
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 {
             onDismiss?()
+            return
+        }
+
+        if let onSnoozeKey,
+           event.charactersIgnoringModifiers?.lowercased() == "s",
+           event.modifierFlags.intersection([.command, .option, .control]).isEmpty {
+            onSnoozeKey()
             return
         }
 
@@ -290,6 +327,9 @@ private func meetingTimeRangeText(from startDate: Date, to endDate: Date) -> Str
 
 private struct MeetingOverlayView: View {
     let meeting: JoinableMeeting
+    let snoozeOptions: [TimeInterval]
+    let attendees: [String]
+    let roomName: String?
     let onJoin: () -> Void
     let onSnooze: (TimeInterval) -> Void
     let onDismiss: () -> Void
@@ -326,22 +366,49 @@ private struct MeetingOverlayView: View {
                     }
                 }
 
+                if let roomName {
+                    Label(roomName, systemImage: "door.left.hand.open")
+                        .font(MeetOverlayTheme.Typography.overlayMetadata)
+                        .foregroundStyle(MeetOverlayTheme.Palette.overlaySecondaryText)
+                }
+
+                if !attendees.isEmpty {
+                    VStack(spacing: 6) {
+                        Label(
+                            "\(attendees.count) \(attendees.count == 1 ? "Attendee" : "Attendees")",
+                            systemImage: "person.2"
+                        )
+                        .font(MeetOverlayTheme.Typography.overlayMetadata)
+                        .foregroundStyle(MeetOverlayTheme.Palette.overlaySecondaryText)
+
+                        Text(attendees.joined(separator: ", "))
+                            .font(MeetOverlayTheme.Typography.overlayHint)
+                            .foregroundStyle(MeetOverlayTheme.Palette.overlayTertiaryText)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(3)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: 760)
+                    }
+                }
+
                 HStack(spacing: 10) {
                     Button(action: onJoin) {
                         HStack(spacing: 10) {
-                            Text(meeting.meetLinks.count > 1 ? "Join First Room" : "Join Room")
+                            Text(joinTitle)
                             KeycapHint(symbol: "⏎", tone: .onAccent)
                         }
                     }
                     .buttonStyle(OverlayPrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
 
-                    secondaryButton("Snooze 1m", keycap: "1", key: "1") {
-                        onSnooze(60)
-                    }
-
-                    secondaryButton("Snooze 5m", keycap: "5", key: "5") {
-                        onSnooze(5 * 60)
+                    ForEach(Array(snoozeOptions.prefix(9).enumerated()), id: \.offset) { index, duration in
+                        secondaryButton(
+                            "Snooze \(SnoozeDurationFormatter.label(duration))",
+                            keycap: "\(index + 1)",
+                            key: KeyEquivalent(Character("\(index + 1)"))
+                        ) {
+                            onSnooze(duration)
+                        }
                     }
 
                     Button(action: onDismiss) {
@@ -362,7 +429,20 @@ private struct MeetingOverlayView: View {
             .overlayPanel(maxWidth: 880)
         }
         .tint(MeetOverlayTheme.Palette.accent)
+        // Force active control rendering: only one overlay window can be key, so
+        // on additional displays — and for the brief moment before the app
+        // activates — the bordered Join/Dismiss buttons would otherwise render in
+        // their dimmed inactive state and read as missing against the dark panel.
+        .environment(\.controlActiveState, .active)
         .onExitCommand(perform: onDismiss)
+    }
+
+    private var joinTitle: String {
+        if meeting.meetLinks.count > 1 {
+            return "Join First Room"
+        }
+
+        return "Join \(meeting.platform.displayName)"
     }
 
     private func secondaryButton(_ title: String, keycap: String, key: KeyEquivalent, action: @escaping () -> Void) -> some View {

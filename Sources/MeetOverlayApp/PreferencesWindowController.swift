@@ -7,6 +7,8 @@ final class PreferencesWindowController {
     private let calendarEventSource: CalendarEventSource
     private let preferencesStore: AppPreferencesStore
     private let loginItemController: LoginItemController
+    private let notificationPresenter: NotificationPresenter
+    private let browserLauncher: BrowserLauncher
     private let onPreferencesChanged: () -> Void
     private let onPreviewReminder: () -> Void
 
@@ -17,12 +19,16 @@ final class PreferencesWindowController {
         calendarEventSource: CalendarEventSource,
         preferencesStore: AppPreferencesStore,
         loginItemController: LoginItemController,
+        notificationPresenter: NotificationPresenter,
+        browserLauncher: BrowserLauncher,
         onPreferencesChanged: @escaping () -> Void,
         onPreviewReminder: @escaping () -> Void
     ) {
         self.calendarEventSource = calendarEventSource
         self.preferencesStore = preferencesStore
         self.loginItemController = loginItemController
+        self.notificationPresenter = notificationPresenter
+        self.browserLauncher = browserLauncher
         self.onPreferencesChanged = onPreferencesChanged
         self.onPreviewReminder = onPreviewReminder
     }
@@ -40,6 +46,8 @@ final class PreferencesWindowController {
             initialPreferences: preferences,
             preferencesStore: preferencesStore,
             loginItemController: loginItemController,
+            notificationPresenter: notificationPresenter,
+            browserLauncher: browserLauncher,
             onPreferencesChanged: onPreferencesChanged,
             onPreviewReminder: onPreviewReminder
         )
@@ -94,16 +102,37 @@ private final class PreferencesViewModel: ObservableObject {
 
     @Published var selectedCalendarIDs: Set<String>?
     @Published var isOverlayEnabled: Bool
+    @Published var isSystemNotificationEnabled: Bool
+    @Published var notificationPermissionDenied = false
     @Published var hidesFinishedEvents: Bool
     @Published var launchAtLogin: Bool
     @Published var reminderSoundID: String
+    @Published var alertLeadTime: TimeInterval
+    @Published var alertLeadTimeUnit: AlertLeadTimeUnit
+    @Published var isSnoozeEnabled: Bool
+    @Published var snoozeOptions: [TimeInterval]
+    @Published var isMeetingRoomCalloutEnabled: Bool
+    @Published var isMeetingRoomInAttendees: Bool
+    @Published var meetingRoomPattern: String
+    @Published var preferredBrowserBundleID: String?
     @Published var loginItemStatus: String
     @Published var errorMessage: String?
 
     let reminderSounds = ReminderSoundCatalog.sounds
+    let availableBrowsers: [InstalledBrowser]
+    private let defaultBrowserName: String?
+
+    var systemDefaultBrowserLabel: String {
+        guard let defaultBrowserName else { return "System Default" }
+        return "System Default (\(defaultBrowserName))"
+    }
 
     var needsStartupAttention: Bool {
         !calendarSyncDiagnostic.launchAtLogin.isHealthy
+    }
+
+    var anyReminderStyleEnabled: Bool {
+        isOverlayEnabled || isSystemNotificationEnabled
     }
 
     var calendarSelectionSummary: String {
@@ -139,6 +168,7 @@ private final class PreferencesViewModel: ObservableObject {
 
     private let preferencesStore: AppPreferencesStore
     private let loginItemController: LoginItemController
+    private let notificationPresenter: NotificationPresenter
     private let reminderSoundPlayer = ReminderSoundPlayer()
     private let onPreferencesChanged: () -> Void
     private let onPreviewReminder: () -> Void
@@ -150,6 +180,8 @@ private final class PreferencesViewModel: ObservableObject {
         initialPreferences: AppPreferences,
         preferencesStore: AppPreferencesStore,
         loginItemController: LoginItemController,
+        notificationPresenter: NotificationPresenter,
+        browserLauncher: BrowserLauncher,
         onPreferencesChanged: @escaping () -> Void,
         onPreviewReminder: @escaping () -> Void
     ) {
@@ -158,14 +190,33 @@ private final class PreferencesViewModel: ObservableObject {
         self.diagnosticEvents = diagnosticEvents
         self.selectedCalendarIDs = initialPreferences.selectedCalendarIDs
         self.isOverlayEnabled = initialPreferences.isOverlayEnabled
+        self.isSystemNotificationEnabled = initialPreferences.isSystemNotificationEnabled
         self.hidesFinishedEvents = initialPreferences.hidesFinishedEvents
         self.reminderSoundID = initialPreferences.reminderSoundID
+        self.alertLeadTime = initialPreferences.alertLeadTime
+        self.alertLeadTimeUnit = initialPreferences.alertLeadTimeUnit
+        self.isSnoozeEnabled = initialPreferences.isSnoozeEnabled
+        self.snoozeOptions = initialPreferences.snoozeOptions.sorted()
+        self.isMeetingRoomCalloutEnabled = initialPreferences.isMeetingRoomCalloutEnabled
+        self.isMeetingRoomInAttendees = initialPreferences.isMeetingRoomInAttendees
+        self.meetingRoomPattern = initialPreferences.meetingRoomPattern
+        self.preferredBrowserBundleID = initialPreferences.preferredBrowserBundleID
         self.launchAtLogin = loginItemController.isEnabled
         self.loginItemStatus = loginItemController.statusText
+        self.availableBrowsers = browserLauncher.availableBrowsers()
+        self.defaultBrowserName = browserLauncher.defaultBrowserName()
         self.preferencesStore = preferencesStore
         self.loginItemController = loginItemController
+        self.notificationPresenter = notificationPresenter
         self.onPreferencesChanged = onPreferencesChanged
         self.onPreviewReminder = onPreviewReminder
+
+        if initialPreferences.isSystemNotificationEnabled {
+            Task { [weak self] in
+                let denied = await notificationPresenter.isAuthorizationDenied()
+                self?.notificationPermissionDenied = denied
+            }
+        }
     }
 
     func isCalendarSelected(_ calendarID: String) -> Bool {
@@ -175,6 +226,22 @@ private final class PreferencesViewModel: ObservableObject {
     func setOverlayEnabled(_ isEnabled: Bool) {
         isOverlayEnabled = isEnabled
         savePreferences()
+    }
+
+    func setSystemNotificationEnabled(_ isEnabled: Bool) {
+        isSystemNotificationEnabled = isEnabled
+        savePreferences()
+
+        guard isEnabled else {
+            notificationPermissionDenied = false
+            return
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            let granted = await self.notificationPresenter.requestAuthorization()
+            self.notificationPermissionDenied = !granted
+        }
     }
 
     func setHidesFinishedEvents(_ isEnabled: Bool) {
@@ -193,6 +260,54 @@ private final class PreferencesViewModel: ObservableObject {
 
     func previewReminder() {
         onPreviewReminder()
+    }
+
+    func setAlertLeadTimeDisplayValue(_ value: Double) {
+        alertLeadTime = ReminderTimeLimits.clamped(alertLeadTimeUnit.toSeconds(max(1, value)))
+        savePreferences()
+    }
+
+    func setAlertLeadTimeUnit(_ unit: AlertLeadTimeUnit) {
+        alertLeadTimeUnit = unit
+        savePreferences()
+    }
+
+    func setSnoozeEnabled(_ enabled: Bool) {
+        isSnoozeEnabled = enabled
+        savePreferences()
+    }
+
+    func addSnoozeOption(_ duration: TimeInterval) {
+        let clamped = ReminderTimeLimits.clamped(duration)
+        guard !snoozeOptions.contains(clamped) else { return }
+        snoozeOptions.append(clamped)
+        snoozeOptions.sort()
+        savePreferences()
+    }
+
+    func removeSnoozeOption(_ duration: TimeInterval) {
+        snoozeOptions.removeAll { $0 == duration }
+        savePreferences()
+    }
+
+    func setMeetingRoomCalloutEnabled(_ enabled: Bool) {
+        isMeetingRoomCalloutEnabled = enabled
+        savePreferences()
+    }
+
+    func setMeetingRoomInAttendees(_ inAttendees: Bool) {
+        isMeetingRoomInAttendees = inAttendees
+        savePreferences()
+    }
+
+    func setMeetingRoomPattern(_ pattern: String) {
+        meetingRoomPattern = pattern
+        savePreferences()
+    }
+
+    func setPreferredBrowser(_ bundleID: String?) {
+        preferredBrowserBundleID = bundleID
+        savePreferences()
     }
 
     func setLaunchAtLogin(_ isEnabled: Bool) {
@@ -234,9 +349,18 @@ private final class PreferencesViewModel: ObservableObject {
         let preferences = AppPreferences(
             selectedCalendarIDs: selectedCalendarIDs,
             isOverlayEnabled: isOverlayEnabled,
+            isSystemNotificationEnabled: isSystemNotificationEnabled,
             launchAtLogin: launchAtLogin,
             hidesFinishedEvents: hidesFinishedEvents,
-            reminderSoundID: reminderSoundID
+            reminderSoundID: reminderSoundID,
+            alertLeadTime: alertLeadTime,
+            alertLeadTimeUnit: alertLeadTimeUnit,
+            isSnoozeEnabled: isSnoozeEnabled,
+            snoozeOptions: snoozeOptions,
+            isMeetingRoomCalloutEnabled: isMeetingRoomCalloutEnabled,
+            isMeetingRoomInAttendees: isMeetingRoomInAttendees,
+            meetingRoomPattern: meetingRoomPattern,
+            preferredBrowserBundleID: preferredBrowserBundleID
         )
 
         preferencesStore.save(preferences)
@@ -253,16 +377,10 @@ private struct SettingsView: View {
 
     var body: some View {
         TabView {
-            GeneralSettingsView(
-                viewModel: viewModel,
-                launchAtLoginBinding: launchAtLoginBinding,
-                overlayBinding: overlayBinding,
-                hidesFinishedEventsBinding: hidesFinishedEventsBinding,
-                reminderSoundBinding: reminderSoundBinding
-            )
-            .tabItem {
-                Label("General", systemImage: "gearshape")
-            }
+            GeneralSettingsView(viewModel: viewModel)
+                .tabItem {
+                    Label("General", systemImage: "gearshape")
+                }
 
             CalendarSettingsView(viewModel: viewModel)
                 .tabItem {
@@ -274,42 +392,10 @@ private struct SettingsView: View {
         .frame(minWidth: 560, minHeight: 520, alignment: .topLeading)
         .background(MeetOverlayTheme.Palette.settingsBackground)
     }
-
-    private var overlayBinding: Binding<Bool> {
-        Binding(
-            get: { viewModel.isOverlayEnabled },
-            set: { viewModel.setOverlayEnabled($0) }
-        )
-    }
-
-    private var hidesFinishedEventsBinding: Binding<Bool> {
-        Binding(
-            get: { viewModel.hidesFinishedEvents },
-            set: { viewModel.setHidesFinishedEvents($0) }
-        )
-    }
-
-    private var reminderSoundBinding: Binding<String> {
-        Binding(
-            get: { viewModel.reminderSoundID },
-            set: { viewModel.setReminderSound($0) }
-        )
-    }
-
-    private var launchAtLoginBinding: Binding<Bool> {
-        Binding(
-            get: { viewModel.launchAtLogin },
-            set: { viewModel.setLaunchAtLogin($0) }
-        )
-    }
 }
 
 private struct GeneralSettingsView: View {
     @ObservedObject var viewModel: PreferencesViewModel
-    let launchAtLoginBinding: Binding<Bool>
-    let overlayBinding: Binding<Bool>
-    let hidesFinishedEventsBinding: Binding<Bool>
-    let reminderSoundBinding: Binding<String>
 
     var body: some View {
         ScrollView {
@@ -319,60 +405,11 @@ private struct GeneralSettingsView: View {
                     subtitle: "Keep the menu quiet and the reminder behavior predictable."
                 )
 
-                SettingsCard(
-                    systemImage: "power",
-                    title: "Startup",
-                    description: "Control whether MeetOverlay is ready after sign-in."
-                ) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Toggle("Open at Login", isOn: launchAtLoginBinding)
-
-                        if viewModel.needsStartupAttention {
-                            Text("Startup: \(viewModel.loginItemStatus)")
-                                .font(MeetOverlayTheme.Typography.helper.weight(.medium))
-                                .foregroundStyle(MeetOverlayTheme.Palette.attention)
-                        }
-                    }
-                }
-
-                SettingsCard(
-                    systemImage: "bell.and.waves.left.and.right",
-                    title: "Reminders",
-                    description: "Fullscreen reminders appear only for joinable Google Meet events."
-                ) {
-                    VStack(alignment: .leading, spacing: MeetOverlayTheme.Spacing.medium) {
-                        Toggle("Show fullscreen reminders", isOn: overlayBinding)
-
-                        HStack(spacing: MeetOverlayTheme.Spacing.small) {
-                            Picker("Sound", selection: reminderSoundBinding) {
-                                ForEach(viewModel.reminderSounds) { sound in
-                                    Text(sound.title).tag(sound.id)
-                                }
-                            }
-                            .frame(maxWidth: 280)
-
-                            Button("Preview") {
-                                viewModel.previewReminderSound()
-                            }
-                        }
-
-                        Text("Used by fullscreen reminders. Back-to-back airlock stays silent.")
-                            .font(MeetOverlayTheme.Typography.helper)
-                            .foregroundStyle(.secondary)
-
-                        Button("Show Sample Reminder") {
-                            viewModel.previewReminder()
-                        }
-                    }
-                }
-
-                SettingsCard(
-                    systemImage: "menubar.rectangle",
-                    title: "Menu",
-                    description: "Keep the menu focused on events that still matter."
-                ) {
-                    Toggle("Hide finished events", isOn: hidesFinishedEventsBinding)
-                }
+                startupCard
+                remindersCard
+                meetingLinksCard
+                meetingRoomsCard
+                menuCard
 
                 SettingsCard(
                     systemImage: "stethoscope",
@@ -390,6 +427,290 @@ private struct GeneralSettingsView: View {
             }
             .padding(MeetOverlayTheme.Spacing.page)
             .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private var startupCard: some View {
+        SettingsCard(
+            systemImage: "power",
+            title: "Startup",
+            description: "Control whether MeetOverlay is ready after sign-in."
+        ) {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("Open at Login", isOn: launchAtLoginBinding)
+
+                if viewModel.needsStartupAttention {
+                    Text("Startup: \(viewModel.loginItemStatus)")
+                        .font(MeetOverlayTheme.Typography.helper.weight(.medium))
+                        .foregroundStyle(MeetOverlayTheme.Palette.attention)
+                }
+            }
+        }
+    }
+
+    private var remindersCard: some View {
+        SettingsCard(
+            systemImage: "bell.and.waves.left.and.right",
+            title: "Reminders",
+            description: "Reminders appear only for joinable video meetings."
+        ) {
+            VStack(alignment: .leading, spacing: MeetOverlayTheme.Spacing.medium) {
+                Toggle("Show fullscreen reminders", isOn: overlayBinding)
+
+                Toggle("Show system notifications", isOn: systemNotificationBinding)
+
+                if viewModel.notificationPermissionDenied {
+                    Text("Notifications for MeetOverlay are turned off. Allow them in System Settings → Notifications.")
+                        .font(MeetOverlayTheme.Typography.helper.weight(.medium))
+                        .foregroundStyle(MeetOverlayTheme.Palette.attention)
+                }
+
+                HStack(spacing: 8) {
+                    Text("Alert me")
+                        .foregroundStyle(viewModel.anyReminderStyleEnabled ? .primary : .secondary)
+                    TextField("", value: alertLeadTimeValueBinding, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 64)
+                    Picker("", selection: alertLeadTimeUnitBinding) {
+                        Text("minutes").tag(AlertLeadTimeUnit.minutes)
+                        Text("seconds").tag(AlertLeadTimeUnit.seconds)
+                    }
+                    .pickerStyle(.menu)
+                    .fixedSize()
+                    Text("before meeting")
+                        .foregroundStyle(.secondary)
+                }
+                .disabled(!viewModel.anyReminderStyleEnabled)
+
+                HStack(spacing: MeetOverlayTheme.Spacing.small) {
+                    Picker("Sound", selection: reminderSoundBinding) {
+                        ForEach(viewModel.reminderSounds) { sound in
+                            Text(sound.title).tag(sound.id)
+                        }
+                    }
+                    .frame(maxWidth: 280)
+
+                    Button("Preview") {
+                        viewModel.previewReminderSound()
+                    }
+                }
+
+                Text("Used by fullscreen reminders. Back-to-back airlock stays silent.")
+                    .font(MeetOverlayTheme.Typography.helper)
+                    .foregroundStyle(.secondary)
+
+                Divider()
+
+                Toggle("Enable snooze", isOn: isSnoozeEnabledBinding)
+                    .disabled(!viewModel.isOverlayEnabled)
+
+                if viewModel.isSnoozeEnabled && viewModel.isOverlayEnabled {
+                    SnoozeOptionsEditor(viewModel: viewModel)
+                        .padding(.top, 2)
+                }
+
+                Button("Show Sample Reminder") {
+                    viewModel.previewReminder()
+                }
+            }
+        }
+    }
+
+    private var meetingLinksCard: some View {
+        SettingsCard(
+            systemImage: "safari",
+            title: "Meeting Links",
+            description: "Choose which browser opens meeting links when you join."
+        ) {
+            HStack(spacing: 8) {
+                Text("Open links in")
+                Picker("", selection: preferredBrowserBinding) {
+                    Text(viewModel.systemDefaultBrowserLabel).tag(String?.none)
+                    if !viewModel.availableBrowsers.isEmpty {
+                        Divider()
+                        ForEach(viewModel.availableBrowsers) { browser in
+                            Text(browser.name).tag(Optional(browser.bundleID))
+                        }
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
+            }
+        }
+    }
+
+    private var meetingRoomsCard: some View {
+        SettingsCard(
+            systemImage: "door.left.hand.open",
+            title: "Meeting Rooms",
+            description: "Call out the booked room on reminders and in the menu."
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Call out meeting room", isOn: meetingRoomCalloutBinding)
+
+                if viewModel.isMeetingRoomCalloutEnabled {
+                    Toggle("Room appears in the attendee list", isOn: meetingRoomInAttendeesBinding)
+
+                    if viewModel.isMeetingRoomInAttendees {
+                        HStack(spacing: 8) {
+                            Text("Room name pattern")
+                            TextField("e.g. MTL-*", text: meetingRoomPatternBinding)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 180)
+                        }
+
+                        Text("* matches any characters, ? matches one. The first matching attendee is shown as the room.")
+                            .font(MeetOverlayTheme.Typography.helper)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("The event's location is used as the room name.")
+                            .font(MeetOverlayTheme.Typography.helper)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private var menuCard: some View {
+        SettingsCard(
+            systemImage: "menubar.rectangle",
+            title: "Menu",
+            description: "Keep the menu focused on events that still matter."
+        ) {
+            Toggle("Hide finished events", isOn: hidesFinishedEventsBinding)
+        }
+    }
+
+    private var overlayBinding: Binding<Bool> {
+        Binding(get: { viewModel.isOverlayEnabled }, set: { viewModel.setOverlayEnabled($0) })
+    }
+
+    private var systemNotificationBinding: Binding<Bool> {
+        Binding(get: { viewModel.isSystemNotificationEnabled }, set: { viewModel.setSystemNotificationEnabled($0) })
+    }
+
+    private var hidesFinishedEventsBinding: Binding<Bool> {
+        Binding(get: { viewModel.hidesFinishedEvents }, set: { viewModel.setHidesFinishedEvents($0) })
+    }
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(get: { viewModel.launchAtLogin }, set: { viewModel.setLaunchAtLogin($0) })
+    }
+
+    private var reminderSoundBinding: Binding<String> {
+        Binding(get: { viewModel.reminderSoundID }, set: { viewModel.setReminderSound($0) })
+    }
+
+    private var alertLeadTimeValueBinding: Binding<Double> {
+        Binding(
+            get: { viewModel.alertLeadTimeUnit.fromSeconds(viewModel.alertLeadTime) },
+            set: { viewModel.setAlertLeadTimeDisplayValue($0) }
+        )
+    }
+
+    private var alertLeadTimeUnitBinding: Binding<AlertLeadTimeUnit> {
+        Binding(get: { viewModel.alertLeadTimeUnit }, set: { viewModel.setAlertLeadTimeUnit($0) })
+    }
+
+    private var isSnoozeEnabledBinding: Binding<Bool> {
+        Binding(get: { viewModel.isSnoozeEnabled }, set: { viewModel.setSnoozeEnabled($0) })
+    }
+
+    private var meetingRoomCalloutBinding: Binding<Bool> {
+        Binding(get: { viewModel.isMeetingRoomCalloutEnabled }, set: { viewModel.setMeetingRoomCalloutEnabled($0) })
+    }
+
+    private var meetingRoomInAttendeesBinding: Binding<Bool> {
+        Binding(get: { viewModel.isMeetingRoomInAttendees }, set: { viewModel.setMeetingRoomInAttendees($0) })
+    }
+
+    private var meetingRoomPatternBinding: Binding<String> {
+        Binding(get: { viewModel.meetingRoomPattern }, set: { viewModel.setMeetingRoomPattern($0) })
+    }
+
+    private var preferredBrowserBinding: Binding<String?> {
+        Binding(get: { viewModel.preferredBrowserBundleID }, set: { viewModel.setPreferredBrowser($0) })
+    }
+}
+
+private struct SnoozeOptionsEditor: View {
+    @ObservedObject var viewModel: PreferencesViewModel
+    @State private var newValue: Int = 5
+    @State private var newUnit: AlertLeadTimeUnit = .minutes
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Snooze options")
+                .font(MeetOverlayTheme.Typography.helper.weight(.medium))
+                .foregroundStyle(.secondary)
+
+            VStack(spacing: 0) {
+                ForEach(viewModel.snoozeOptions, id: \.self) { duration in
+                    HStack {
+                        Text(SnoozeDurationFormatter.label(duration))
+                            .font(.body)
+                        Spacer()
+                        Button {
+                            viewModel.removeSnoozeOption(duration)
+                        } label: {
+                            Image(systemName: "minus.circle.fill")
+                                .foregroundStyle(MeetOverlayTheme.Palette.warning)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+
+                    if duration != viewModel.snoozeOptions.last {
+                        Divider().padding(.horizontal, 10)
+                    }
+                }
+
+                if viewModel.snoozeOptions.isEmpty {
+                    Text("No snooze options — add one below.")
+                        .font(MeetOverlayTheme.Typography.helper)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                }
+
+                Divider()
+
+                HStack(spacing: 8) {
+                    TextField("", value: $newValue, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 56)
+                    Picker("", selection: $newUnit) {
+                        Text("minutes").tag(AlertLeadTimeUnit.minutes)
+                        Text("seconds").tag(AlertLeadTimeUnit.seconds)
+                    }
+                    .pickerStyle(.menu)
+                    .fixedSize()
+                    Spacer()
+                    Button {
+                        let duration = newUnit.toSeconds(Double(max(1, newValue)))
+                        viewModel.addSnoozeOption(duration)
+                    } label: {
+                        Label("Add", systemImage: "plus.circle.fill")
+                            .font(MeetOverlayTheme.Typography.helper.weight(.medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(MeetOverlayTheme.Palette.accent)
+                    .disabled(newValue <= 0)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+            }
+            .background(
+                RoundedRectangle(cornerRadius: MeetOverlayTheme.Radius.inset)
+                    .fill(MeetOverlayTheme.Palette.insetBackground)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: MeetOverlayTheme.Radius.inset)
+                    .stroke(MeetOverlayTheme.Palette.mutedBorder, lineWidth: 1)
+            )
         }
     }
 }

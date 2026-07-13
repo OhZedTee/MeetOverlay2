@@ -27,14 +27,18 @@ final class CalendarMenuPresenterTests: XCTestCase {
         XCTAssertEqual(sections[0].rows[0].title, "Planning")
         XCTAssertEqual(sections[0].rows[0].timeText, "17:00")
         XCTAssertEqual(sections[0].rows[0].phase, .upcoming)
+        XCTAssertEqual(sections[0].rows[0].durationText, "1h")
         XCTAssertTrue(sections[0].rows[0].hasMeetLink)
         XCTAssertEqual(sections[0].rows[0].meetURL?.absoluteString, "https://meet.google.com/abc-defg-hij")
+        XCTAssertEqual(sections[0].rows[0].platform, .googleMeet)
         XCTAssertEqual(sections[0].rows[0].meetLinks.map(\.absoluteString), ["https://meet.google.com/abc-defg-hij"])
         XCTAssertEqual(sections[1].rows[0].title, "Admin day")
         XCTAssertEqual(sections[1].rows[0].timeText, "All-day")
         XCTAssertEqual(sections[1].rows[0].phase, .allDay)
+        XCTAssertNil(sections[1].rows[0].durationText, "All-day events show no duration")
         XCTAssertFalse(sections[1].rows[0].hasMeetLink)
         XCTAssertNil(sections[1].rows[0].meetURL)
+        XCTAssertNil(sections[1].rows[0].platform)
         XCTAssertEqual(sections[1].rows[0].meetLinks, [])
     }
 
@@ -64,6 +68,80 @@ final class CalendarMenuPresenterTests: XCTestCase {
             "https://meet.google.com/location-room-abc",
             "https://meet.google.com/title-room-abc"
         ])
+    }
+
+    func testRowDurationCoversPartialHours() throws {
+        let calendar = fixedCalendar()
+        let now = date(year: 2026, month: 6, day: 3, hour: 16, minute: 0, calendar: calendar)
+        let event = makeEvent(
+            id: "event-1",
+            title: "Sprint planning",
+            startDate: date(year: 2026, month: 6, day: 3, hour: 17, minute: 0, calendar: calendar),
+            endDate: date(year: 2026, month: 6, day: 3, hour: 18, minute: 30, calendar: calendar)
+        )
+
+        let sections = CalendarMenuPresenter(calendar: calendar, locale: Locale(identifier: "en_GB"))
+            .sections(now: now, events: [event])
+
+        XCTAssertEqual(sections[0].rows[0].durationText, "1h 30m")
+    }
+
+    func testRowsDetectNonMeetPlatforms() throws {
+        let calendar = fixedCalendar()
+        let now = date(year: 2026, month: 6, day: 3, hour: 16, minute: 0, calendar: calendar)
+        let zoomEvent = makeEvent(
+            id: "zoom-event",
+            title: "Zoom sync",
+            startDate: date(year: 2026, month: 6, day: 3, hour: 17, minute: 0, calendar: calendar),
+            endDate: date(year: 2026, month: 6, day: 3, hour: 18, minute: 0, calendar: calendar),
+            notes: "https://company.zoom.us/j/987654321"
+        )
+
+        let sections = CalendarMenuPresenter(calendar: calendar, locale: Locale(identifier: "en_GB"))
+            .sections(now: now, events: [zoomEvent])
+
+        XCTAssertTrue(sections[0].rows[0].hasMeetLink)
+        XCTAssertEqual(sections[0].rows[0].platform, .zoom)
+    }
+
+    func testRowsCarryAttendeesWithRoomResolutionDisabledByDefault() throws {
+        let calendar = fixedCalendar()
+        let now = date(year: 2026, month: 6, day: 3, hour: 16, minute: 0, calendar: calendar)
+        let event = makeEvent(
+            id: "event-1",
+            title: "Planning",
+            startDate: date(year: 2026, month: 6, day: 3, hour: 17, minute: 0, calendar: calendar),
+            endDate: date(year: 2026, month: 6, day: 3, hour: 18, minute: 0, calendar: calendar),
+            attendees: ["Alice", "MTL-5F-Boardroom"]
+        )
+
+        let sections = CalendarMenuPresenter(calendar: calendar, locale: Locale(identifier: "en_GB"))
+            .sections(now: now, events: [event])
+
+        XCTAssertEqual(sections[0].rows[0].attendees, ["Alice", "MTL-5F-Boardroom"])
+        XCTAssertNil(sections[0].rows[0].roomName)
+    }
+
+    func testRowsResolveRoomWhenConfigEnabled() throws {
+        let calendar = fixedCalendar()
+        let now = date(year: 2026, month: 6, day: 3, hour: 16, minute: 0, calendar: calendar)
+        let event = makeEvent(
+            id: "event-1",
+            title: "Planning",
+            startDate: date(year: 2026, month: 6, day: 3, hour: 17, minute: 0, calendar: calendar),
+            endDate: date(year: 2026, month: 6, day: 3, hour: 18, minute: 0, calendar: calendar),
+            attendees: ["Alice", "MTL-5F-Boardroom"]
+        )
+
+        let sections = CalendarMenuPresenter(calendar: calendar, locale: Locale(identifier: "en_GB"))
+            .sections(
+                now: now,
+                events: [event],
+                roomConfig: MeetingRoomConfig(isEnabled: true, isRoomInAttendees: true, pattern: "MTL-*")
+            )
+
+        XCTAssertEqual(sections[0].rows[0].roomName, "MTL-5F-Boardroom")
+        XCTAssertEqual(sections[0].rows[0].attendees, ["Alice"])
     }
 
     func testMenuBarTitleUsesNextUpcomingTodayEvent() throws {
@@ -436,7 +514,8 @@ final class CalendarMenuPresenterTests: XCTestCase {
         participationStatus: EventParticipationStatus = .accepted,
         url: URL? = nil,
         notes: String? = nil,
-        location: String? = nil
+        location: String? = nil,
+        attendees: [String] = []
     ) -> CalendarEventSnapshot {
         CalendarEventSnapshot(
             id: id,
@@ -447,7 +526,8 @@ final class CalendarMenuPresenterTests: XCTestCase {
             participationStatus: participationStatus,
             url: url,
             notes: notes,
-            location: location
+            location: location,
+            attendees: attendees
         )
     }
 

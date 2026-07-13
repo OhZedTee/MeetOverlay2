@@ -10,19 +10,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let statusMenu = StatusMenuController()
         let calendarEventSource = CalendarEventSource()
         let overlayPresenter = OverlayPresenter()
+        let notificationPresenter = NotificationPresenter()
         let preferencesStore = AppPreferencesStore()
         let loginItemController = LoginItemController()
+        let browserLauncher = BrowserLauncher()
 
         let monitorController = MeetingMonitorController(
             calendarEventSource: calendarEventSource,
             overlayPresenter: overlayPresenter,
+            notificationPresenter: notificationPresenter,
             statusMenu: statusMenu,
-            preferencesStore: preferencesStore
+            preferencesStore: preferencesStore,
+            browserLauncher: browserLauncher
         )
         let preferencesWindowController = PreferencesWindowController(
             calendarEventSource: calendarEventSource,
             preferencesStore: preferencesStore,
             loginItemController: loginItemController,
+            notificationPresenter: notificationPresenter,
+            browserLauncher: browserLauncher,
             onPreferencesChanged: { [weak monitorController] in
                 monitorController?.refreshFromPreferences()
             },
