@@ -63,9 +63,18 @@ final class BrowserLauncher {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.application]
-        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.treatsFilePackagesAsDirectories = false
+        // Chrome/Edge install PWAs under "~/Applications/Chrome Apps.localized",
+        // so start there; the panel falls back gracefully if it is absent.
+        panel.directoryURL = FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent("Applications/Chrome Apps.localized")
         panel.prompt = "Choose"
         panel.message = "Choose an app to open meeting links (including installed PWAs)."
+
+        // A menu-bar (accessory) app must be active for a modal panel to come to
+        // the front and accept input.
+        NSApp.activate(ignoringOtherApps: true)
 
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
         return browser(at: url)

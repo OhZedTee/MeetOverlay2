@@ -99,7 +99,12 @@ final class MeetingMonitorController {
             snoozeOptions: snoozeOptions,
             attendees: meeting.attendees,
             roomName: nil,
-            onJoin: { [weak self] in self?.endPreview() },
+            // Open the sample link in the selected browser, like a real reminder,
+            // so this doubles as a way to test the "Open links in" choice.
+            onJoin: { [weak self] in
+                self?.openMeetingLink(meeting.meetURL)
+                self?.endPreview()
+            },
             onSnooze: { [weak self] _ in self?.endPreview() },
             onDismiss: { [weak self] in self?.endPreview() }
         )

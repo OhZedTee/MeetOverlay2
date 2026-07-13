@@ -585,7 +585,7 @@ private struct GeneralSettingsView: View {
                     }
                 }
 
-                Text("Pick any installed app — including a PWA such as Google Meet installed through Chrome.")
+                Text("The list shows detected browsers. Use “Choose…” to pick another app or a PWA — e.g. Google Meet under “Chrome Apps”.")
                     .font(MeetOverlayTheme.Typography.helper)
                     .foregroundStyle(.secondary)
             }
