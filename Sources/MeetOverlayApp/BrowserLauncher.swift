@@ -1,4 +1,5 @@
 import AppKit
+import MeetOverlayCore
 import UniformTypeIdentifiers
 
 /// A browser (or app / PWA) installed on this Mac that can open meeting links.
@@ -83,13 +84,27 @@ final class BrowserLauncher {
     /// Opens `url` in the browser identified by `preferredBundleID`. Falls back to the
     /// system default when no preference is set or that browser is no longer installed.
     func open(_ url: URL, preferredBundleID: String?) {
-        guard let preferredBundleID,
-              let appURL = workspace.urlForApplication(withBundleIdentifier: preferredBundleID) else {
+        guard let preferredBundleID else {
             workspace.open(url)
             return
         }
 
-        workspace.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
+        // A Chromium PWA (e.g. a Google Meet app) has no URL handler, so opening a
+        // link "in" it errors; route through its parent browser instead.
+        let targetBundleID = ChromiumWebAppBundleID.parentBrowserBundleID(for: preferredBundleID) ?? preferredBundleID
+
+        guard let appURL = workspace.urlForApplication(withBundleIdentifier: targetBundleID) else {
+            workspace.open(url)
+            return
+        }
+
+        workspace.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+            guard error != nil else { return }
+            // The chosen app couldn't open the link — fall back to the default browser.
+            DispatchQueue.main.async {
+                NSWorkspace.shared.open(url)
+            }
+        }
     }
 
     private func browser(at appURL: URL) -> InstalledBrowser? {

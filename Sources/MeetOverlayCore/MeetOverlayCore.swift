@@ -1331,3 +1331,14 @@ public enum VideoCallLinkFinder {
         return nil
     }
 }
+
+/// Chromium-family PWAs (Chrome/Edge/Brave) install per-app bundles whose id looks
+/// like "<browser id>.app.<hash>" and which declare no URL handler, so a link can't
+/// be opened "in" them directly. This maps such an id back to its parent browser,
+/// which can render the link (and hand off to the PWA when configured to).
+public enum ChromiumWebAppBundleID {
+    public static func parentBrowserBundleID(for bundleID: String) -> String? {
+        guard let range = bundleID.range(of: ".app.") else { return nil }
+        return String(bundleID[..<range.lowerBound])
+    }
+}
