@@ -6,6 +6,7 @@ DerivedData/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
 .swiftpm/xcode/
+.vscode/
 
 # Local environment and signing overrides
 .env

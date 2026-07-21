@@ -82,8 +82,24 @@ final class CalendarEventSource {
             participationStatus: participationStatus(for: event),
             url: event.url,
             notes: event.notes,
-            location: event.location
+            location: event.location,
+            attendees: attendeeNames(for: event)
         )
+    }
+
+    private func attendeeNames(for event: EKEvent) -> [String] {
+        (event.attendees ?? []).compactMap { participant in
+            if let name = participant.name, !name.isEmpty {
+                return name
+            }
+
+            let address = participant.url.absoluteString
+            if address.hasPrefix("mailto:") {
+                return String(address.dropFirst("mailto:".count))
+            }
+
+            return address.isEmpty ? nil : address
+        }
     }
 
     private func stableID(for event: EKEvent) -> String {
